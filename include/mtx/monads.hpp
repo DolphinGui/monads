@@ -24,25 +24,35 @@ template <typename T>
 concept monadic = detail::is_monad<T>;
 
 template <typename Functor> struct detail::MonadT<Functor> {
-  Functor f;
+  Functor _f;
 
-  constexpr MonadT(Functor &&f) : f(std::move(f)) {}
+  template <typename Sig>
+  std::function<Sig> releaseFunctor() noexcept {
+    return std::function<Sig>(std::move(_f));
+  }
+
+  template <typename Sig>
+  std::function<Sig> copyFunctor() const noexcept {
+    return std::function<Sig>(_f);
+  }
+
+  constexpr MonadT(Functor &&f) : _f(std::move(f)) {}
   template <typename... Params>
   decltype(auto) operator()(Params &&...params) const
-      noexcept(noexcept(f(params...))) {
-    return f(std::forward<Params>(params)...);
+      noexcept(noexcept(_f(params...))) {
+    return _f(std::forward<Params>(params)...);
   }
   template <typename... Params>
   decltype(auto)
-  operator()(Params &&...params) noexcept(noexcept(f(params...))) {
-    return f(std::forward<Params>(params)...);
+  operator()(Params &&...params) noexcept(noexcept(_f(params...))) {
+    return _f(std::forward<Params>(params)...);
   }
 
   template <typename R>
   constexpr decltype(auto) operator>>=(MonadT<R> right) noexcept {
     auto n = [left = std::move(*this),
               right = std::move(right)]<typename... Args>(Args &&...args) {
-      return right.f(left.f(std::forward<Args>(args)...));
+      return right._f(left._f(std::forward<Args>(args)...));
     };
     return MonadT<decltype(n)>(std::move(n));
   }
@@ -50,7 +60,7 @@ template <typename Functor> struct detail::MonadT<Functor> {
   template <typename R>
   constexpr decltype(auto) operator>>=(MonadT<R> right) const noexcept {
     auto n = [left = *this, right = right]<typename... Args>(Args &&...args) {
-      return right.f(left.f(std::forward<Args>(args)...));
+      return right._f(left._f(std::forward<Args>(args)...));
     };
     return MonadT<decltype(n)>(std::move(n));
   }
@@ -146,4 +156,5 @@ constexpr auto TrycatchHandled(auto &&handler) noexcept {
     };
   });
 }
+
 } // namespace mtx
