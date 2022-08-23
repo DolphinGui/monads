@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 
+cmake_policy(SET CMP0077 NEW)
+
 project(monads CXX C)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MTX_MONAD_BUILD_TESTS "builds tests" ON)
@@ -10,7 +12,8 @@ include(GNUInstallDirs)
 
 add_library(monads INTERFACE)
 target_include_directories(monads 
-  INTERFACE ${CMAKE_SOURCE_DIR}/include)
+  INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 target_compile_features(monads INTERFACE cxx_std_20)
 
 if(MTX_MONAD_BUILD_TESTS)
