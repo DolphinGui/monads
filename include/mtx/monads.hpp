@@ -9,152 +9,84 @@
 
 namespace mtx {
 namespace detail {
-template <typename Functor, typename = void> class MonadT;
-struct Transform {};
+template <typename Functor> class Monad;
 template <template <class...> class, class...>
-struct is_specialization : std::false_type {};
+struct is_specialization_impl : std::false_type {};
 template <template <class...> class Template, class... Args>
-struct is_specialization<Template, Template<Args...>> : std::true_type {};
-template <typename T>
-constexpr bool is_monad = is_specialization<MonadT, T>::value;
+struct is_specialization_impl<Template, Template<Args...>> : std::true_type {};
+template <template <class...> class Class, class... Args>
+constexpr bool is_specialization =
+    is_specialization_impl<Class, Args...>::value;
+template <typename T> constexpr bool is_monad = is_specialization<Monad, T>;
+struct Uncallable_t {};
+constexpr auto Uncallable = Uncallable_t{};
+template <typename T> struct strip_optional_impl { using type = T; };
+template <typename T> struct strip_optional_impl<std::optional<T>> {
+  using type = T;
+};
+template <typename T> using strip_optional = typename strip_optional_impl<T>::type;
 } // namespace detail
 template <typename T>
 concept nonmonadic = !detail::is_monad<T>;
 template <typename T>
 concept monadic = detail::is_monad<T>;
 
-template <typename Functor> struct detail::MonadT<Functor> {
+template <typename Functor, typename Composer> struct MonadT {
   Functor _f;
+  Composer _c;
+  constexpr MonadT(Functor &&f, Composer &&c)
+      : _f(std::move(f)), _c(std::move(c)) {}
+  constexpr MonadT(const Functor &f, const Composer &c) : _f(f), _c(c) {}
 
-  template <typename Sig>
-  std::function<Sig> releaseFunctor() noexcept {
-    return std::function<Sig>(std::move(_f));
+  template <typename F, typename C>
+  constexpr auto operator>>=(MonadT<F, C> right) const {
+    return _c(_f, right._f, _c);
   }
 
-  template <typename Sig>
-  std::function<Sig> copyFunctor() const noexcept {
-    return std::function<Sig>(_f);
-  }
-
-  constexpr MonadT(Functor &&f) : _f(std::move(f)) {}
-  template <typename... Params>
-  decltype(auto) operator()(Params &&...params) const
-      noexcept(noexcept(_f(params...))) {
-    return _f(std::forward<Params>(params)...);
-  }
-  template <typename... Params>
-  decltype(auto)
-  operator()(Params &&...params) noexcept(noexcept(_f(params...))) {
-    return _f(std::forward<Params>(params)...);
-  }
-
-  template <typename R>
-  constexpr decltype(auto) operator>>=(MonadT<R> right) noexcept {
-    auto n = [left = std::move(*this),
-              right = std::move(right)]<typename... Args>(Args &&...args) {
-      return right._f(left._f(std::forward<Args>(args)...));
-    };
-    return MonadT<decltype(n)>(std::move(n));
-  }
-
-  template <typename R>
-  constexpr decltype(auto) operator>>=(MonadT<R> right) const noexcept {
-    auto n = [left = *this, right = right]<typename... Args>(Args &&...args) {
-      return right._f(left._f(std::forward<Args>(args)...));
-    };
-    return MonadT<decltype(n)>(std::move(n));
+  template <typename... Params> constexpr auto operator()(Params &&...p) {
+    return _f(std::forward<Params>(p)...);
   }
 };
-template <typename Functor> constexpr auto Monad(Functor &&f) noexcept {
-  return detail::MonadT<Functor>(std::forward<Functor>(f));
+constexpr auto Monad(auto &&Functor) noexcept {
+  return MonadT(
+      std::forward<std::decay_t<decltype(Functor)>>(Functor),
+      []<typename L, typename R, typename Self>(L &&left, R &&right, Self &&s) {
+        return MonadT(
+            [left = std::move(left),
+             right = std::move(right)]<typename... Params>(Params &&...p) {
+              return right(left(std::forward<Params>(p)...));
+            },
+            std::move(s));
+      });
 }
-// transformative monads cannot be invoked like normal monads
-// and may only act on other monads
-template <typename Functor> struct detail::MonadT<Functor, detail::Transform> {
-  Functor f;
-
-  constexpr MonadT(Functor &&f) : f(std::move(f)) {}
-  template <typename R>
-  constexpr decltype(auto) operator>>=(MonadT<R> right) const noexcept {
-    return MonadT<decltype(f(right))>(f(right));
-  }
-  template <typename R>
-  constexpr decltype(auto) operator>>=(MonadT<R> right) noexcept {
-    return MonadT<decltype(f(right))>(f(right));
-  }
-};
-template <typename T> constexpr auto TransformMonad(T &&f) noexcept {
-  return detail::MonadT<T, detail::Transform>(std::forward<T>(f));
-}
-
-constexpr auto Value(auto &&val) {
+constexpr auto Value(auto &&val) noexcept {
   return Monad([val = std::move(val)]() { return val; });
 }
 
-constexpr auto Identity = Monad([](auto &&param) { return param; });
-constexpr auto Maybe = TransformMonad(
-    [](auto &&mon) requires monadic<std::decay_t<decltype(mon)>> {
-      return [mon = std::move(mon)]<typename T>(std::optional<T> &&param)
-                 -> std::optional<std::invoke_result_t<decltype(mon), T>> {
-        if (param.has_value())
-          return mon(*param);
-        else
-          return std::nullopt;
-      };
+constexpr auto Maybe = MonadT(
+    detail::Uncallable,
+    []<typename L, typename R, typename Self>(L &&left, R &&right, Self &&s) {
+      return MonadT(
+          [right = std::move(right)]<typename T>(std::optional<T> p)
+              -> std::optional<detail::strip_optional<
+                  std::invoke_result_t<std::decay_t<decltype(right)>, T>>> {
+            if (p.has_value()) {
+              using Ret =
+                  std::invoke_result_t<std::decay_t<decltype(right)>, T>;
+              if constexpr (detail::is_specialization<std::optional, Ret>) {
+                auto result = right(*p);
+                if (result.has_value())
+                  return *result;
+                else
+                  return std::nullopt;
+              } else {
+                return right(*p);
+              }
+            } else {
+              return std::nullopt;
+            }
+          },
+          std::move(s));
     });
-
-template <typename ErrType>
-constexpr auto Fallible = TransformMonad([
-](auto &&mon) requires monadic<std::decay_t<decltype(mon)>> {
-  return [mon = std::move(mon)]<typename T>(std::variant<ErrType, T> &&param)
-             -> std::variant<ErrType, std::invoke_result_t<decltype(mon), T>> {
-    if (std::holds_alternative<ErrType>(param)) {
-      return param;
-    } else {
-      return mon(std::get<T>(param));
-    }
-  };
-});
-
-template <typename ExceptionType, bool no_passthrough = true>
-constexpr auto Trycatch = TransformMonad([
-](auto &&mon) requires monadic<std::decay_t<decltype(mon)>> {
-  return [mon = std::move(mon)]<typename... T>(T &&...params) noexcept(
-             no_passthrough)
-             -> std::optional<std::invoke_result_t<decltype(mon), T...>> {
-    try {
-      return mon(std::forward<T>(params)...);
-    } catch (const ExceptionType &) {
-      return std::nullopt;
-    }
-  };
-});
-
-template <typename ExceptionType, bool rethrow = false,
-          bool no_passthrough = true>
-constexpr auto TrycatchHandled(auto &&handler) noexcept {
-  using ErrType = std::invoke_result_t<decltype(handler), ExceptionType>;
-  return TransformMonad([handler = std::move(handler)](
-      auto &&mon) requires monadic<std::decay_t<decltype(mon)>> {
-    return [mon = std::move(mon), handler = std::move(handler)]<typename... T>(
-               T &&...params) noexcept(!rethrow && no_passthrough)
-               -> std::conditional_t<
-                   !rethrow,
-                   std::variant<ErrType,
-                                std::invoke_result_t<decltype(mon), T...>>,
-                   std::invoke_result_t<decltype(mon), T...>> {
-      try {
-        return mon(std::forward<T>(params)...);
-      } catch (const ExceptionType &e) {
-        if constexpr (rethrow) {
-          handler(e);
-          throw;
-        } else {
-          return handler(e);
-        }
-      }
-    };
-  });
-}
 
 } // namespace mtx
