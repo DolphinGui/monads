@@ -46,7 +46,10 @@ TEST(exceptions, rethrown) {
       add15 >>= evensOnly;
   bool has_thrown = false;
   try {
-    result();
+    auto n = result();
+    static_assert(!mtx::is_specialization<std::variant, decltype(n)>,
+                  "rethrowing exception handling monads should not"
+                  "return result types");
   } catch (...) {
     has_thrown = true;
   }
