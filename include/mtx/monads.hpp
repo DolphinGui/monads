@@ -91,6 +91,7 @@ constexpr auto Monad(auto &&Functor) noexcept {
 constexpr auto Value(auto &&val) noexcept {
   return Monad([val = std::move(val)]() { return val; });
 }
+constexpr auto Identity = Monad([](auto &&val) { return val; });
 
 constexpr auto Maybe = MonadT(
     detail::Uncallable,
