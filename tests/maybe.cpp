@@ -34,7 +34,6 @@ constexpr auto getnum = mtx::Monad(getnum_f);
 
 TEST(fallible, success) {
   auto sum = mtx::Value(12) >>= getnum >>=
-      mtx::Fallible<std::error_condition> >>= add15 >>= getnum >>=
       mtx::Fallible<std::error_condition> >>= add15;
   auto n = sum();
 
@@ -44,6 +43,8 @@ TEST(fallible, success) {
 
 TEST(fallible, fail) {
   auto sum = mtx::Value(15) >>= getnum >>=
+      mtx::Fallible<std::error_condition> >>= add15 >>= getnum >>=
+      mtx::Fallible<std::error_condition> >>= add15 >>= getnum >>=
       mtx::Fallible<std::error_condition> >>= add15;
   auto n = sum();
   EXPECT_TRUE(std::holds_alternative<std::error_condition>(n));
