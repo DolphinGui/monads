@@ -20,6 +20,16 @@ template <typename T> struct strip_optional_impl { using type = T; };
 template <typename T> struct strip_optional_impl<std::optional<T>> {
   using type = T;
 };
+template <size_t index, typename... Ts>
+using nth_arg = typename std::tuple_element<index, std::tuple<Ts...>>::type;
+
+template <size_t index, typename... T> struct strip_err_impl {
+  using type = nth_arg<0, T...>;
+};
+template <size_t index, typename... Args>
+struct strip_err_impl<index, std::variant<Args...>> {
+  using type = nth_arg<index, Args...>;
+};
 } // namespace detail
 template <template <class...> class Class, class... Args>
 constexpr bool is_specialization =
@@ -28,8 +38,7 @@ template <typename T> constexpr bool is_monad = is_specialization<MonadT, T>;
 template <typename T>
 using strip_optional = typename detail::strip_optional_impl<T>::type;
 template <typename Var>
-using strip_err = std::conditional_t<is_specialization<std::variant, Var>,
-                                     std::variant_alternative_t<1, Var>, Var>;
+using strip_err = typename detail::strip_err_impl<1, Var>::type;
 
 template <typename T>
 concept nonmonadic = !is_monad<T>;
@@ -37,32 +46,34 @@ template <typename T>
 concept monadic = is_monad<T>;
 
 template <typename Functor, typename Composer> struct MonadT {
-  Functor _f;
-  Composer _c;
+  Functor _function;
+  Composer _compositor;
   constexpr MonadT(Functor &&f, Composer &&c)
-      : _f(std::move(f)), _c(std::move(c)) {}
+      : _function(std::move(f)), _compositor(std::move(c)) {}
 
-  constexpr MonadT(const Functor &f, const Composer &c) : _f(f), _c(c) {}
+  constexpr MonadT(const Functor &f, const Composer &c)
+      : _function(f), _compositor(c) {}
 
   template <typename Sig> constexpr auto releaseFunctor() noexcept {
-    return std::function<Sig>(std::move(_f));
+    return std::function<Sig>(std::move(_function));
   }
   template <typename Sig> constexpr auto copyFunctor() const noexcept {
-    return std::function<Sig>(_f);
+    return std::function<Sig>(_function);
   }
 
   template <typename F, typename C>
   constexpr auto operator>>=(MonadT<F, C> right) const noexcept {
-    return _c(_f, right._f, _c);
+    return _compositor(_function, right._function, _compositor);
   }
 
   template <typename... Params>
-  constexpr auto operator()(Params &&...p) noexcept(noexcept(_f(p...))) {
-    return _f(std::forward<Params>(p)...);
+  constexpr auto operator()(Params &&...p) noexcept(noexcept(_function(p...))) {
+    return _function(std::forward<Params>(p)...);
   }
   template <typename... Params>
-  constexpr auto operator()(Params &&...p) const noexcept(noexcept(_f(p...))) {
-    return _f(std::forward<Params>(p)...);
+  constexpr auto operator()(Params &&...p) const
+      noexcept(noexcept(_function(p...))) {
+    return _function(std::forward<Params>(p)...);
   }
 };
 constexpr auto Monad(auto &&Functor) noexcept {
@@ -109,30 +120,22 @@ constexpr auto Maybe = MonadT(
 // unlike the maybe monad this can't strip redundant Result variants
 // so it shouldn't be used on functions that are already fallible
 template <typename ErrType>
-constexpr auto Fallible = MonadT(
-    detail::Uncallable,
-    []<typename L, typename R, typename Self>(L &&left, R &&right, Self &&s) {
-      return MonadT(
-          [right = std::move(right)]<typename T>(std::variant<ErrType, T> p)
-              -> std::variant<ErrType,
-                              std::invoke_result_t<decltype(right), T>> {
-            using Ret = std::invoke_result_t<decltype(right), T>;
-            if (std::holds_alternative<T>(p)) {
-              if constexpr (is_specialization<std::variant, Ret>) {
-                auto result = right(std::get<T>(p));
-                if (std::holds_alternative<Ret>(result))
-                  return std::get<Ret>(result);
-                else
-                  return std::get<ErrType>(result);
-              } else {
-                return right(std::get<T>(p));
-              }
-            } else {
-              return std::get<ErrType>(p);
-            }
-          },
-          std::move(s));
-    });
+constexpr auto Fallible = MonadT(detail::Uncallable, []<typename L, typename R,
+                                                        typename Self>(
+                                                         L &&left, R &&right,
+                                                         Self &&s) {
+  return MonadT(
+      [right = std::move(right)]<typename T>(std::variant<ErrType, T> p)
+          -> std::variant<ErrType,
+                          strip_err<std::invoke_result_t<decltype(right), T>>> {
+        if (std::holds_alternative<T>(p)) {
+          return right(std::get<T>(p));
+        } else {
+          return std::get<ErrType>(p);
+        }
+      },
+      std::move(s));
+});
 
 template <typename Exception, bool passthrough = false>
 constexpr auto Trycatch = MonadT(detail::Uncallable, []<typename L, typename R,
